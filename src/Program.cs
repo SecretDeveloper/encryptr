@@ -1,7 +1,6 @@
 ﻿using System;
+using System.Text;
 using System.IO;
-using System.Linq;
-using System.Security.Cryptography;
 using CliParse;
 
 namespace Encryptr
@@ -21,38 +20,23 @@ namespace Encryptr
                     return;
                 }
 
-                if(cmd.Decrypt == false){
-                    if(cmd.InputType == "text")  // string input
-                    {
-                        if(cmd.OutputValue == "") // write to console
-                        {
-                            Console.WriteLine(Encryptr.Encrypt(cmd.InputValue, cmd.Password));
-                        }
-                    }
-                    else // file
-                    {
-                        Encryptr.EncryptFile(cmd.InputValue, cmd.Password, cmd.OutputValue);
-                    }
-                }
-                else
-                {
-                    if(cmd.InputType == "text")  // string input
-                    {
-                        if(cmd.OutputValue == "") // write to console
-                        {
-                            Console.WriteLine(Encryptr.Decrypt(cmd.InputValue, cmd.Password));
-                        }
-                    }
-                    else // file
-                    {                        
-                        Encryptr.DecryptFile(cmd.InputValue, cmd.Password, cmd.OutputValue);
-                    }
-                }
+                var input = string.IsNullOrEmpty(cmd.Text)? File.ReadAllText(cmd.InputFile): cmd.Text;
+                
+                var sb = new StringBuilder();
+                if(!cmd.Decrypt)
+                    sb.Append(Convert.ToBase64String(Encryptr.Encrypt(input, cmd.Password)));                
+                else // Decrypting
+                    sb.Append(Encryptr.Decrypt(Convert.FromBase64String(input), cmd.Password));
 
+                if(string.IsNullOrEmpty(cmd.OutputFile))
+                    Console.WriteLine(sb.ToString());
+                else
+                    File.WriteAllText(cmd.OutputFile, sb.ToString());
             }   
             catch(Exception ex)
             {
-                Console.WriteLine("Error: " + ex.Message);                
+                Console.WriteLine("Error: " + ex.Message); 
+                Console.WriteLine("Error: " + ex.StackTrace);                
                 System.Environment.Exit(1);
             }            
         }

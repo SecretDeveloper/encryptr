@@ -16,13 +16,13 @@ namespace Encryptr
 
         public static string ByteArrayToString(byte[] ba)
         {
-        StringBuilder hex = new StringBuilder(ba.Length * 2);
-        foreach (byte b in ba)
-            hex.AppendFormat("{0:x2}", b);
-        return hex.ToString();
+            StringBuilder hex = new StringBuilder(ba.Length * 2);
+            foreach (byte b in ba)
+                hex.AppendFormat("{0:x2}", b);
+            return hex.ToString();
         }
         
-        public static string Encrypt(string plainText, string password)
+        public static byte[] Encrypt(string plainText, string password)
         {
             if (string.IsNullOrEmpty(plainText)) throw new ArgumentNullException("plainText");
             if (string.IsNullOrEmpty(password)) throw new ArgumentNullException("password");
@@ -49,24 +49,23 @@ namespace Encryptr
                         streamWriter.Write(plainText);
                     }
 
-                    var cipherTextBytes = memoryStream.ToArray();                                        
-                    salt = salt.Concat(checksum).Concat(cipherTextBytes).ToArray();
-                    return Convert.ToBase64String(salt);
+                    var cipher = memoryStream.ToArray();                                        
+                    salt = salt.Concat(checksum).Concat(cipher).ToArray(); // concat all the bytes!
+                    return salt;
                 }
             }
         }
 
-        public static string Decrypt(string input, string password)
+        public static string Decrypt(byte[] input, string password)
         {
-            if (string.IsNullOrEmpty(input)) throw new ArgumentNullException("input");
+            if (input.Length < _saltLength + _checksumLength) throw new ArgumentNullException("input");
             if (string.IsNullOrEmpty(password)) throw new ArgumentNullException("password");
 
-            // Extract the salt from our ciphertext
-            byte[] inputBytes = Convert.FromBase64String(input);
-            byte[] salt = inputBytes.Take(_saltLength).ToArray();
-            byte[] checksum = inputBytes.Skip(_saltLength).Take(_checksumLength).ToArray();
-            byte[] cipher = inputBytes.Skip(_saltLength+_checksumLength)
-                                            .Take(inputBytes.Length - (_saltLength+_checksumLength))
+            // Extract the salt from our ciphertext            
+            byte[] salt = input.Take(_saltLength).ToArray();
+            byte[] checksum = input.Skip(_saltLength).Take(_checksumLength).ToArray();
+            byte[] cipher = input.Skip(_saltLength+_checksumLength)
+                                            .Take(input.Length - (_saltLength+_checksumLength))
                                             .ToArray();
 
             using (var keyDerivationFunction = new Rfc2898DeriveBytes(password, salt, _iterations))
@@ -92,7 +91,7 @@ namespace Encryptr
                         byte[] contentChecksum = sha.ComputeHash(Encoding.Unicode.GetBytes(plain));
                         var expectedChecksum = ByteArrayToString(checksum);
                         var actualChecksum = ByteArrayToString(contentChecksum);
-                        if(expectedChecksum.Length == 256 && expectedChecksum != actualChecksum) 
+                        if(expectedChecksum.Length == _checksumLength && expectedChecksum != actualChecksum) 
                             throw new ApplicationException(
                                 string.Format("ERROR: Invalid checksum found, content cannot be decrypted.  Expected '{0}' but found '{1}'", expectedChecksum, actualChecksum));
                     }
@@ -100,109 +99,6 @@ namespace Encryptr
                     return plain;
                 }
             }
-        }
-
-        public static void EncryptFile(string inputPath, string password, string outputPath)
-        {
-            if (string.IsNullOrEmpty(inputPath)) throw new ArgumentNullException("inputPath");
-            if (string.IsNullOrEmpty(outputPath)) throw new ArgumentNullException("outputPath");
-            if (string.IsNullOrEmpty(password)) throw new ArgumentNullException("password");
-
-            // Derive a new Salt and IV from the Key
-            using (var keyDerivationFunction = new Rfc2898DeriveBytes(password, _saltLength, _iterations))
-            {
-                var saltBytes = keyDerivationFunction.Salt;
-                var keyBytes = keyDerivationFunction.GetBytes(_keyLength);
-                var ivBytes = keyDerivationFunction.GetBytes(_ivLength);
-
-                // Create an encryptor to perform the stream transform.
-                // Create the streams used for encryption.
-                using (var aesManaged = new AesManaged(){Padding = PaddingMode.PKCS7})
-                using (var encryptor = aesManaged.CreateEncryptor(keyBytes, ivBytes))
-                using (var inputStream = new FileStream(inputPath, FileMode.Open))
-                {
-                    // Hash content
-                    var sha = new SHA256Managed();
-                    byte[] checksum = sha.ComputeHash(inputStream);
-                    inputStream.Seek(0, SeekOrigin.Begin); // reset location
-
-                    using (var outputStream = new FileStream(outputPath, FileMode.Create))
-                    using (var cryptoStream = new CryptoStream(outputStream, encryptor, CryptoStreamMode.Write))                
-                    {                        
-                        
-                        outputStream.Write(saltBytes,0, _saltLength); // write salt at start of file - not encrypted.
-                        outputStream.Write(checksum, 0, _checksumLength); // write checksum - not encrypted.                        
-
-                        int data;                    
-                        while((data = inputStream.ReadByte()) != -1)
-                        {                            
-                            cryptoStream.WriteByte((byte)data);
-                        }
-                    }
-                }                
-            }
-        }
-       
-
-        public static void DecryptFile(string inputPath, string password, string outputPath)
-        {
-            if (string.IsNullOrEmpty(inputPath)) throw new ArgumentNullException("inputPath");
-            if (string.IsNullOrEmpty(outputPath)) throw new ArgumentNullException("outputPath");
-            if (string.IsNullOrEmpty(password)) throw new ArgumentNullException("password");
-
-            byte[] saltBytes = new byte[_saltLength];        
-            byte[] checksum = new byte[_checksumLength];
-            string expectedChecksum;
-
-            byte[] ivBytes = new byte[_ivLength];
-            byte[] keyBytes = new byte[_keyLength];
-
-            using (var aesManaged = new AesManaged(){Padding = PaddingMode.PKCS7})
-            {
-                Rfc2898DeriveBytes keyDerivationFunction;
-                ICryptoTransform cryptoTransform;
-
-                using (var inputStream = new FileStream(inputPath, FileMode.Open))
-                {                
-                    inputStream.Read(saltBytes, 0, _saltLength);                
-                    inputStream.Read(checksum, 0, _checksumLength);
-
-                    keyDerivationFunction = new Rfc2898DeriveBytes(password, saltBytes, _iterations);
-                    keyBytes = keyDerivationFunction.GetBytes(_keyLength);
-                    ivBytes = keyDerivationFunction.GetBytes(_ivLength);                        
-                    cryptoTransform = aesManaged.CreateDecryptor(keyBytes, ivBytes);
-                                        
-                    using (var cryptoStream = new CryptoStream(inputStream, cryptoTransform, CryptoStreamMode.Read))                    
-                    {                            
-                        // Hash content
-                        using(var sha = new SHA256Managed()){
-                            byte[] fileChecksum = sha.ComputeHash(cryptoStream);
-                            expectedChecksum = ByteArrayToString(checksum);
-                            var actualChecksum = ByteArrayToString(fileChecksum);
-                            if(expectedChecksum.Length == 256 && expectedChecksum != actualChecksum) 
-                                throw new ApplicationException(
-                                    string.Format("ERROR: Invalid checksum found, content cannot be decrypted.  Expected '{0}' but found '{1}'", expectedChecksum, actualChecksum));
-                        }
-                    }                
-                }
-
-                using (var inputStream = new FileStream(inputPath, FileMode.Open))
-                using (var cryptoStream = new CryptoStream(inputStream, cryptoTransform, CryptoStreamMode.Read))                    
-                {                                                    
-                    inputStream.Seek(_saltLength + _checksumLength, SeekOrigin.Begin); // move to start of encrypted content.
-
-                    using (var outputStream = new FileStream(outputPath, FileMode.Create))
-                    {
-                        int data;
-                        while((data = cryptoStream.ReadByte()) != -1)
-                        {                                    
-                            outputStream.WriteByte((byte)data);
-                        }
-                    }
-                } 
-                keyDerivationFunction.Dispose();
-                cryptoTransform.Dispose();
-            }
-        }
+        }        
     }
 }
